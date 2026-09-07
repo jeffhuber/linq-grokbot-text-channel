@@ -1,0 +1,6 @@
+{
+  "name": "linq-grokbot-text-channel",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Public HTTPS hop: Linq webhooks → Cursor agent webhook (adds Bearer auth)"
+}
