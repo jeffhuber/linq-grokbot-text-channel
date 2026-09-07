@@ -32,6 +32,14 @@ Phone SMS/iMessage
 
 Avoid **`linq webhooks listen` / ngrok-style tunnels for production**. Those die when the process or laptop sleeps. Use them only for local debugging.
 
+### Critical: ACK Linq before awaiting Cursor
+
+The forwarder must return **200 to Linq immediately** (`async: true`) and forward to Cursor in the background (Vercel `waitUntil`).
+
+If it **awaits** the Cursor agent webhook before responding, Linq treats the slow response as a failed delivery and **redelivers the same `event_id`**. Long agent wakes (30–100s) then cause the desk to answer the same inbound repeatedly.
+
+Health check should look like `{ "ok": true, "async": true, ... }`.
+
 ## Backup path: 5-minute poll
 
 Webhooks can drop (deploy blips, misconfig, transient 5xx). Run a scheduled agent routine (~every 5 minutes) that:
@@ -52,7 +60,7 @@ If you bump last-seen on “saw message” or “started handling” and then fa
 3. **Send** via Linq; confirm success.
 4. **Then** persist last-seen to that message id / timestamp.
 
-Idempotency: webhook + poll may both see the same message; dedupe by message id before send.
+Idempotency: webhook + poll may both see the same message; Linq may also **redeliver the same `event_id`**. Dedupe by message id **and** event_id. If the inbound already has an answering `from_me` reply, stay completely quiet (no restatement / rebook).
 
 ## Filtering
 

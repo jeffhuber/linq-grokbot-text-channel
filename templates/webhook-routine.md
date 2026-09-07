@@ -11,9 +11,12 @@ Replace placeholders. Do not commit real URLs, keys, or phones.
 ```text
 You were woken by a Linq message.received payload (via the public forwarder).
 
-1. Parse the event; extract message id, chat id, sender, text/attachments.
+1. Parse the event; extract event_id, message id, chat id, sender, text/attachments.
 2. If from_me or sender not in allowlist {{ALLOWLIST_PHONES}}: exit without sending.
-3. If this message id was already handled: exit (idempotent).
+3. Idempotency (hard):
+   a. If this webhook event_id was already processed: stay completely quiet.
+   b. BEFORE any send, list the chat. If this inbound message id already has a from_me reply after it that answers the ask (not merely "Checking…"): stay completely quiet — no progress ping, no restatement, no rebook.
+   c. Progress pings ("Checking…") at most once per inbound message id.
 4. Draft a concise reply per desk persona.
 5. Send the reply via Linq to the same chat.
 6. ONLY AFTER send succeeds: update last-seen to this message id / timestamp.
@@ -53,6 +56,6 @@ Right:  see message → send → confirm → THEN bump last-seen
 
 ## D. Optional: health / dry-run notes for operators
 
-- Forwarder `GET /` should return `{ "ok": true, ... }`.
+- Forwarder `GET /` should return `{ "ok": true, "async": true, ... }` (immediate ACK path).
 - Temporarily disable Linq webhook to verify poll alone still delivers.
 - EXAMPLE webhook URL shape only: `https://YOUR_PROJECT.vercel.app/`
