@@ -5,16 +5,22 @@
  * Linq outbound webhooks do not send custom Authorization headers, so a small
  * public HTTPS relay adds the Bearer token before calling Cursor.
  *
+ * Important: ACK Linq immediately (async: true) and forward via waitUntil.
+ * Awaiting Cursor before responding causes Linq to redeliver the same event_id
+ * while the agent wake is still running (duplicate desk replies).
+ *
  * Env (set in Vercel project settings; see .env.example):
  *   CURSOR_WEBHOOK_URL  – Cursor agent webhook URL
  *   CURSOR_WEBHOOK_KEY  – Bearer token for that webhook
  *   ALLOWLIST           – comma-separated E.164 phones (optional filter)
  */
+const { waitUntil } = require("@vercel/functions");
+
 module.exports = async function handler(req, res) {
   if (req.method === "GET") {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ ok: true, service: "linq-grokbot-text-channel" }));
+    res.end(JSON.stringify({ ok: true, service: "linq-grokbot-text-channel", async: true }));
     return;
   }
   if (req.method !== "POST") {
@@ -135,34 +141,33 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  try {
-    const upstream = await fetch(cursorUrl, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + cursorKey,
-        "Content-Type": "application/json",
-      },
-      body: raw,
-    });
-    const text = await upstream.text();
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json");
-    res.end(
-      JSON.stringify({
-        ok: true,
-        forwarded: true,
-        upstream_status: upstream.status,
-        upstream_body_len: text.length,
-      })
-    );
-  } catch (err) {
-    res.statusCode = 502;
-    res.setHeader("Content-Type", "application/json");
-    res.end(
-      JSON.stringify({
-        error: "forward_failed",
-        message: String(err && err.message ? err.message : err),
-      })
-    );
-  }
+  // ACK Linq immediately so it does not redeliver the same event_id while
+  // Cursor agent wakes (often 30–100s). Forward runs after the response via waitUntil.
+  const forwardPromise = (async () => {
+    try {
+      const upstream = await fetch(cursorUrl, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + cursorKey,
+          "Content-Type": "application/json",
+        },
+        body: raw,
+      });
+      await upstream.text();
+    } catch (err) {
+      console.error("forward_failed", String(err && err.message ? err.message : err));
+    }
+  })();
+
+  waitUntil(forwardPromise);
+
+  res.statusCode = 200;
+  res.setHeader("Content-Type", "application/json");
+  res.end(
+    JSON.stringify({
+      ok: true,
+      forwarded: true,
+      async: true,
+    })
+  );
 };

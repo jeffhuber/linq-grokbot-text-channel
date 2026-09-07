@@ -12,6 +12,8 @@ Linq (message.received)
 
 A **5-minute poll backup** (agent routine) covers missed webhooks. **Never advance `last-seen` until after a successful outbound send.**
 
+The forwarder **ACKs Linq immediately** (`async: true`) and forwards to Cursor via Vercel `waitUntil`. If it awaited Cursor before responding, Linq would redeliver the same `event_id` during long agent wakes and the desk would answer repeatedly.
+
 ## Quickstart
 
 ### 1. Deploy the forwarder
@@ -53,7 +55,7 @@ linq webhooks create \
 
 Text the Linq number from an allowlisted phone. Confirm:
 
-1. Forwarder returns `forwarded: true` (check Vercel logs).
+1. Forwarder returns fast `200` with `forwarded: true` and `async: true` (check Vercel logs for the upstream hop).
 2. Cursor agent wakes and replies via Linq.
 3. Poll path still works if you temporarily disable the Linq webhook.
 

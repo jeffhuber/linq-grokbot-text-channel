@@ -36,5 +36,9 @@ You speak as the operator’s assistant over SMS/iMessage via Linq. Be concise; 
 
 ## Idempotency & last-seen
 
+- **BEFORE any on-thread send**, list the chat. If this inbound message id already has a `from_me` reply after it that answers the ask (not merely "Checking…"), stay **completely quiet** — no progress ping, no restatement, no rebook.
+- Deduplicate webhook `event_id`: if you already processed that event, stay quiet. Linq may redeliver while a prior wake is still finishing; last-seen alone is not enough.
+- Progress pings ("Checking…") are at most once per inbound message id.
+
 - Deduplicate by Linq message id (webhook and poll may overlap).
 - **Never advance last-seen until after a successful send** (or an explicit skip with no reply owed). See `templates/webhook-routine.md`.
