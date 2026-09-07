@@ -14,8 +14,8 @@
 
 1. **Open the package**
    - Local path: `/workspace/linq-grokbot-text-channel`
-   - Public clone (when published): `https://github.com/OWNER/linq-grokbot-text-channel`  
-     (replace `OWNER` with the real GitHub org/user)
+   - Public clone (when published): `https://github.com/jeffhuber/linq-grokbot-text-channel`  
+     
 
 2. **Deploy forwarder**
    - `cd forwarder && npx vercel --prod`
