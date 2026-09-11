@@ -209,9 +209,13 @@ function checkDuplicate(eventId) {
  */
 function getClientIp(req) {
   const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string") {
-    const first = xff.split(",")[0].trim();
-    if (first) return first;
+  if (xff) {
+    // Handle both string and string[] (array from some proxies)
+    const xffString = Array.isArray(xff) ? xff[0] : xff;
+    if (typeof xffString === "string") {
+      const first = xffString.split(",")[0].trim();
+      if (first) return first;
+    }
   }
   return req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown";
 }
@@ -281,6 +285,24 @@ module.exports = async function handler(req, res) {
   const rawBodyBuffer = Buffer.concat(chunks);
   const rawBodyString = rawBodyBuffer.toString("utf8");
   
+  // Empty body check: if content-length > 0 but buffer is empty, fail closed
+  const contentLength = parseInt(req.headers["content-length"] || "0", 10);
+  if (contentLength > 0 && rawBodyBuffer.length === 0) {
+    if (linqSecret || requireSignature) {
+      // Signature expected - fail with 401
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "empty_body", message: "Content-Length > 0 but body is empty" }));
+      return;
+    } else {
+      // No signature expected - 200-skip to avoid false message.received
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, skipped: true, reason: "empty_body" }));
+      return;
+    }
+  }
+  
   let body = {};
   try {
     body = JSON.parse(rawBodyString || "{}");
@@ -311,9 +333,10 @@ module.exports = async function handler(req, res) {
   } else {
     // No secret configured - check production safety
     if (isProduction && !allowUnsigned) {
-      // Fail-closed in production: no secret and no explicit allow → reject
+      // Fail-closed in production: no secret and no explicit allow → reject with 401 (not 503)
+      // 401 = no-retry class (same as invalid signature) - prevents Linq retry storm on misconfig
       console.error("production_unsigned_webhook_blocked", { ip });
-      res.statusCode = 503;
+      res.statusCode = 401;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({
         error: "webhook_signature_required",
@@ -323,8 +346,6 @@ module.exports = async function handler(req, res) {
     } else if (allowUnsigned) {
       // Warn when explicitly allowing unsigned (even in dev)
       console.warn("⚠️  WARNING: Accepting unsigned webhooks (ALLOW_UNSIGNED_WEBHOOKS=1). Not recommended for production!");
-    } else if (isProduction) {
-      console.warn("⚠️  WARNING: No LINQ_WEBHOOK_SECRET configured in production! Webhooks are unsigned.");
     }
   }
 
@@ -405,7 +426,7 @@ module.exports = async function handler(req, res) {
   // V1 uses is_from_me flags
   // Use explicit check to avoid operator precedence issues with || and ??
   let fromMe = false;
-  if (data.direction === "outbound") {
+  if (String(data.direction || "").toLowerCase() === "outbound") {
     fromMe = true;
   } else {
     fromMe = Boolean(
