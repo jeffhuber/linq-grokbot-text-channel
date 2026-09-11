@@ -22,9 +22,11 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 
 ### 1. Webhook Signature Verification (Required for Production)
 - Supports [Standard Webhooks](https://docs.linqapp.com/guides/webhooks/) format (`webhook-id`, `webhook-timestamp`, `webhook-signature`)
+- Accepts space-separated multiple `v1,{base64}` signatures (any match succeeds)
 - Falls back to legacy `X-Webhook-Signature` header if needed
 - Uses constant-time comparison to prevent timing attacks
 - Rejects webhooks older than 5 minutes (replay protection)
+- **Verifies against raw body bytes** (never re-serializes JSON)
 - **Fails closed**: When `LINQ_WEBHOOK_SECRET` is set, unsigned webhooks are rejected with 401
 
 ### 2. Sender Validation
@@ -37,12 +39,15 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 
 ### 4. Event Deduplication
 - Uses `webhook-id` (Standard Webhooks) or `event_id` as idempotency key
+- Returns **200 with `{ ok: true, skipped: true, reason: "duplicate" }`** for duplicates
 - In-memory dedupe store (10-minute retention)
 - **Note**: For multi-instance deployments, consider Vercel KV or Upstash Redis for shared state
 
 ### 5. Rate Limiting
 - 100 requests per 5 minutes per IP address
-- Returns 429 with `Retry-After` header when exceeded
+- Returns **200 with `{ ok: true, skipped: true, reason: "rate_limited" }`** (not 429)
+- Linq retries 429/5xx, so rate-limited requests return success to prevent retries
+- `X-RateLimit-Limit` and `X-RateLimit-Remaining` headers on all responses
 - In-memory store (consider shared store for production scale)
 
 ### 6. Security Headers
@@ -131,10 +136,11 @@ The in-memory dedupe and rate limit stores work for single-instance deployments.
 ## Security Summary
 
 - **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` in production. The forwarder fails closed when the secret is set.
+- **Raw body verification**: Signature verification uses raw body bytes (never re-serializes JSON).
 - **Sender validation**: The forwarder rejects `message.received` events with no identifiable sender.
 - **Event type validation**: Only known Linq event types are accepted.
-- **Rate limiting**: 100 requests per 5 minutes per IP address.
-- **Deduplication**: Events are deduplicated by `webhook-id` or `event_id` (10-minute window).
+- **Rate limiting**: 100 requests per 5 minutes per IP address. Returns 200 skipped (not 429) to prevent Linq retries.
+- **Deduplication**: Events are deduplicated by `webhook-id` or `event_id` (10-minute window). Returns 200 skipped for duplicates.
 - **Secrets management**: Keep `CURSOR_WEBHOOK_KEY`, `LINQ_WEBHOOK_SECRET`, and phone numbers out of git.
 - Do **not** run long-lived "webhooks listen" tunnels for production; use this public HTTPS path.
 

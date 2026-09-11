@@ -20,6 +20,13 @@
 const crypto = require("crypto");
 const { waitUntil } = require("@vercel/functions");
 
+// Disable Vercel's automatic body parsing to preserve raw bytes for HMAC verification
+export const config = {
+  api: {
+    bodyParser: false,
+  },
+};
+
 // In-memory stores for dedupe and rate limiting (consider Vercel KV for production)
 const processedEvents = new Map();
 const rateLimitStore = new Map();
@@ -39,8 +46,11 @@ setInterval(() => {
  * Verify Standard Webhooks signature (https://docs.linqapp.com/guides/webhooks/)
  * Headers: webhook-id, webhook-timestamp, webhook-signature
  * Signed content: {webhook-id}.{webhook-timestamp}.{rawBody}
+ * 
+ * Note: webhook-signature can be space-separated multiple "v1,{base64}" entries.
+ * Accept if ANY v1 signature matches (timing-safe compare).
  */
-function verifyStandardWebhook(headers, rawBody, secret) {
+function verifyStandardWebhook(headers, rawBodyBuffer, secret) {
   const webhookId = headers["webhook-id"];
   const webhookTimestamp = headers["webhook-timestamp"];
   const webhookSignature = headers["webhook-signature"];
@@ -59,14 +69,22 @@ function verifyStandardWebhook(headers, rawBody, secret) {
     return { valid: false, reason: "timestamp_too_old" };
   }
 
-  // Parse signature (format: "v1,{base64}")
-  const signatureParts = webhookSignature.split(",");
-  if (signatureParts.length < 2 || signatureParts[0] !== "v1") {
-    return { valid: false, reason: "invalid_signature_format" };
+  // Parse signatures (space-separated list of "v1,{base64}" entries)
+  const signatures = webhookSignature.split(" ").filter(Boolean);
+  const v1Signatures = [];
+  
+  for (const sig of signatures) {
+    const parts = sig.split(",");
+    if (parts.length >= 2 && parts[0] === "v1") {
+      v1Signatures.push(parts.slice(1).join(",")); // Handle base64 with embedded commas
+    }
   }
-  const expectedSignatureBase64 = signatureParts[1];
 
-  // Compute expected signature
+  if (v1Signatures.length === 0) {
+    return { valid: false, reason: "no_v1_signatures" };
+  }
+
+  // Compute expected signature from raw body bytes
   // Secret format: "whsec_" prefix, then base64-encoded key
   let secretBytes;
   try {
@@ -76,30 +94,31 @@ function verifyStandardWebhook(headers, rawBody, secret) {
     return { valid: false, reason: "invalid_secret_format" };
   }
 
-  const signedContent = `${webhookId}.${webhookTimestamp}.${rawBody}`;
+  const signedContent = `${webhookId}.${webhookTimestamp}.${rawBodyBuffer.toString("utf8")}`;
   const computedSignature = crypto
     .createHmac("sha256", secretBytes)
     .update(signedContent)
     .digest("base64");
-
-  // Constant-time comparison
-  const expectedBuffer = Buffer.from(expectedSignatureBase64);
   const computedBuffer = Buffer.from(computedSignature);
-  if (expectedBuffer.length !== computedBuffer.length) {
-    return { valid: false, reason: "signature_mismatch" };
-  }
-  if (!crypto.timingSafeEqual(expectedBuffer, computedBuffer)) {
-    return { valid: false, reason: "signature_mismatch" };
+
+  // Try each v1 signature with constant-time comparison
+  for (const expectedSig of v1Signatures) {
+    const expectedBuffer = Buffer.from(expectedSig);
+    if (expectedBuffer.length === computedBuffer.length) {
+      if (crypto.timingSafeEqual(expectedBuffer, computedBuffer)) {
+        return { valid: true };
+      }
+    }
   }
 
-  return { valid: true };
+  return { valid: false, reason: "signature_mismatch" };
 }
 
 /**
  * Verify legacy Linq webhook signature (X-Webhook-Signature)
  * Format: "sha256={hex_hmac}"
  */
-function verifyLegacyWebhook(headers, rawBody, secret) {
+function verifyLegacyWebhook(headers, rawBodyBuffer, secret) {
   const signature = headers["x-webhook-signature"];
   if (!signature) {
     return { valid: false, reason: "missing_legacy_signature" };
@@ -113,7 +132,7 @@ function verifyLegacyWebhook(headers, rawBody, secret) {
   const secretBytes = Buffer.from(secret, "utf8");
   const computedHmac = crypto
     .createHmac("sha256", secretBytes)
-    .update(rawBody)
+    .update(rawBodyBuffer)
     .digest("hex");
 
   // Constant-time comparison
@@ -132,19 +151,19 @@ function verifyLegacyWebhook(headers, rawBody, secret) {
 /**
  * Verify webhook signature (try Standard Webhooks first, fall back to legacy)
  */
-function verifyWebhookSignature(headers, rawBody, secret) {
+function verifyWebhookSignature(headers, rawBodyBuffer, secret) {
   if (!secret) {
     return { valid: false, reason: "no_secret_configured" };
   }
 
   // Try Standard Webhooks first
   if (headers["webhook-id"]) {
-    return verifyStandardWebhook(headers, rawBody, secret);
+    return verifyStandardWebhook(headers, rawBodyBuffer, secret);
   }
 
   // Fall back to legacy signature
   if (headers["x-webhook-signature"]) {
-    return verifyLegacyWebhook(headers, rawBody, secret);
+    return verifyLegacyWebhook(headers, rawBodyBuffer, secret);
   }
 
   return { valid: false, reason: "no_signature_headers" };
@@ -215,20 +234,23 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // Rate limiting
+  // Rate limiting - return 200 skipped instead of 429 (Linq retries 429/5xx)
   const ip = req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "unknown";
   const rateLimit = checkRateLimit(ip);
-  if (!rateLimit.allowed) {
-    res.statusCode = 429;
-    res.setHeader("Content-Type", "application/json");
-    res.setHeader("X-RateLimit-Limit", "100");
-    res.setHeader("X-RateLimit-Remaining", "0");
-    res.setHeader("Retry-After", String(Math.ceil((rateLimit.resetAt - Date.now()) / 1000)));
-    res.end(JSON.stringify({ error: "rate_limit_exceeded" }));
-    return;
-  }
   res.setHeader("X-RateLimit-Limit", "100");
   res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+  
+  if (!rateLimit.allowed) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ 
+      ok: true, 
+      skipped: true, 
+      reason: "rate_limited",
+      retryAfter: Math.ceil((rateLimit.resetAt - Date.now()) / 1000)
+    }));
+    return;
+  }
 
   const cursorUrl = process.env.CURSOR_WEBHOOK_URL;
   const cursorKey = process.env.CURSOR_WEBHOOK_KEY;
@@ -240,32 +262,25 @@ module.exports = async function handler(req, res) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // Read raw body for signature verification
-  let body = req.body;
-  let raw = "";
-  if (typeof body === "string") {
-    raw = body;
-    try {
-      body = JSON.parse(body);
-    } catch (_) {
-      body = {};
-    }
-  } else if (body && typeof body === "object") {
-    raw = JSON.stringify(body);
-  } else {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    raw = Buffer.concat(chunks).toString("utf8");
-    try {
-      body = JSON.parse(raw || "{}");
-    } catch (_) {
-      body = {};
-    }
+  // Read raw body as buffer (never re-serialize JSON for HMAC verification)
+  // bodyParser is disabled via export config above
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
+  }
+  const rawBodyBuffer = Buffer.concat(chunks);
+  const rawBodyString = rawBodyBuffer.toString("utf8");
+  
+  let body = {};
+  try {
+    body = JSON.parse(rawBodyString || "{}");
+  } catch (_) {
+    body = {};
   }
 
   // Signature verification (fail closed when secret is configured)
   if (linqSecret || requireSignature) {
-    const verification = verifyWebhookSignature(req.headers, raw, linqSecret);
+    const verification = verifyWebhookSignature(req.headers, rawBodyBuffer, linqSecret);
     if (!verification.valid) {
       if (!allowUnsigned) {
         res.statusCode = 401;
@@ -429,7 +444,7 @@ module.exports = async function handler(req, res) {
           Authorization: "Bearer " + cursorKey,
           "Content-Type": "application/json",
         },
-        body: raw,
+        body: rawBodyString,
       });
       await upstream.text();
     } catch (err) {
