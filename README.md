@@ -27,11 +27,11 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 - Uses constant-time comparison to prevent timing attacks
 - Rejects webhooks older than 5 minutes (replay protection)
 - **Verifies against raw body bytes** (never re-serializes JSON)
-- **Fails closed**: When `LINQ_WEBHOOK_SECRET` is set, unsigned webhooks are rejected with 401
+- **Fails closed**: When `LINQ_WEBHOOK_SECRET` is set, unsigned webhooks are rejected with 401. In production (`VERCEL_ENV=production` or `NODE_ENV=production`), unsigned webhooks are rejected with 503 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
 
 ### 2. Sender Validation
-- Fails closed on `message.received` events with no identifiable sender
-- Prevents forwarding of malformed or spoofed messages
+- Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** on `message.received` events with no identifiable sender (consistent with Linq retry semantics — it retries 429/5xx, not ordinary 4xx)
+- Prevents forwarding of unidentifiable messages
 
 ### 3. Event Type Validation
 - Only accepts known Linq event types (`message.received`, `message.sent`, etc.)
@@ -44,7 +44,7 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 - **Note**: For multi-instance deployments, consider Vercel KV or Upstash Redis for shared state
 
 ### 5. Rate Limiting
-- 100 requests per 5 minutes per IP address
+- 100 requests per 5 minutes per IP address (extracted from `x-forwarded-for` first hop only for accurate client identification)
 - Returns **200 with `{ ok: true, skipped: true, reason: "rate_limited" }`** (not 429)
 - Linq retries 429/5xx, so rate-limited requests return success to prevent retries
 - `X-RateLimit-Limit` and `X-RateLimit-Remaining` headers on all responses
@@ -142,13 +142,25 @@ The in-memory dedupe and rate limit stores work for single-instance deployments.
 - Consider [Vercel KV](https://vercel.com/docs/storage/vercel-kv) or [Upstash Redis](https://upstash.com/) for shared state
 - Update the dedupe and rate limit logic to use the shared store
 
+## Technical Notes
+
+### Raw Body Parsing on Vercel
+
+**Critical**: On plain Vercel `/api` routes (not Next.js), `module.exports.config.api.bodyParser = false` is ignored by Vercel's runtime. The forwarder uses `req.on('data')` / `req.on('end')` to buffer raw bytes for HMAC verification.
+
+**Do NOT use** `for await (const chunk of req)` — it hangs/yields empty on Vercel's patched stream and breaks signature verification → 401 failures.
+
+### Rate Limit Key Normalization
+
+Client IP is extracted from `x-forwarded-for` (first hop only). Vercel's `x-forwarded-for` format is `"client-ip, proxy1, proxy2, ..."` — we only want the actual client IP, not the proxy chain.
+
 ## Security Summary
 
-- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` in production. The forwarder fails closed when the secret is set.
+- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` in production. The forwarder fails closed when the secret is set. **Production safety**: In production environments, unsigned webhooks are rejected with 503 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
 - **Raw body verification**: Signature verification uses raw body bytes (never re-serializes JSON).
-- **Sender validation**: The forwarder rejects `message.received` events with no identifiable sender.
+- **Sender validation**: Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** for `message.received` events with no identifiable sender (consistent with Linq retry semantics).
 - **Event type validation**: Only known Linq event types are accepted.
-- **Rate limiting**: 100 requests per 5 minutes per IP address. Returns 200 skipped (not 429) to prevent Linq retries.
+- **Rate limiting**: 100 requests per 5 minutes per IP address (first hop from `x-forwarded-for`). Returns 200 skipped (not 429) to prevent Linq retries.
 - **Deduplication**: Events are deduplicated by `webhook-id` or `event_id` (10-minute window). Returns 200 skipped for duplicates.
 - **Secrets management**: Keep `CURSOR_WEBHOOK_KEY`, `LINQ_WEBHOOK_SECRET`, and phone numbers out of git.
 - Do **not** run long-lived "webhooks listen" tunnels for production; use this public HTTPS path.
