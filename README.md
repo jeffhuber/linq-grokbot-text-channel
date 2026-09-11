@@ -109,6 +109,15 @@ Text the Linq number from an allowlisted phone. Confirm:
 - [Desk persona template](templates/linq-desk-persona.md)
 - [Webhook + poll routine snippets](templates/webhook-routine.md)
 
+## Webhook version compatibility
+
+The forwarder supports both Linq webhook formats:
+
+- **V2** (`webhook_version: 2026-02-03`): Sender at `data.sender_handle.handle`, direction at `data.direction` (`inbound`|`outbound`)
+- **V1** (legacy): Sender at `data.from_handle.handle` or nested `message.from` fields, from-me via `is_from_me` flags
+
+The parser resolves sender and from-me status across both versions automatically.
+
 ## Security Configuration
 
 ### Required for Production

@@ -343,13 +343,18 @@ module.exports = async function handler(req, res) {
   const data = body.data || body.payload || {};
   const msg = data.message || body.message || data || {};
 
+  // V2 (webhook_version 2026-02-03): sender_handle at data.sender_handle.handle
+  // V1: from_handle at data.from_handle or nested message fields
+  // Note: sender_handle.id is a UUID, not usable for allowlist matching
+  const senderHandle = data.sender_handle || null;
   const fromHandle = msg.from_handle || data.from_handle || null;
   const sender =
+    (senderHandle && (senderHandle.handle || senderHandle.phone)) ||
+    (fromHandle && (fromHandle.handle || fromHandle.phone)) ||
     msg.from ||
     msg.sender ||
     msg.phone ||
     msg.phone_number ||
-    (fromHandle && (fromHandle.handle || fromHandle.id || fromHandle.phone)) ||
     data.from ||
     data.sender ||
     data.phone ||
@@ -360,18 +365,26 @@ module.exports = async function handler(req, res) {
 
   const senderNorm = sender ? String(sender).trim() : "";
 
-  const fromMe = Boolean(
-    msg.is_from_me ??
-      msg.from_me ??
-      msg.is_me ??
-      (fromHandle && (fromHandle.is_me ?? fromHandle.is_from_me)) ??
-      data.is_from_me ??
-      data.from_me ??
-      data.fromMe ??
-      body.is_from_me ??
-      body.from_me ??
-      body.fromMe
-  );
+  // V2 uses data.direction: "inbound" | "outbound"
+  // V1 uses is_from_me flags
+  // Use explicit check to avoid operator precedence issues with || and ??
+  let fromMe = false;
+  if (data.direction === "outbound") {
+    fromMe = true;
+  } else {
+    fromMe = Boolean(
+      msg.is_from_me ??
+        msg.from_me ??
+        msg.is_me ??
+        (fromHandle && (fromHandle.is_me ?? fromHandle.is_from_me)) ??
+        data.is_from_me ??
+        data.from_me ??
+        data.fromMe ??
+        body.is_from_me ??
+        body.from_me ??
+        body.fromMe
+    );
+  }
 
   const matchesAllowlist = (candidate) => {
     if (!candidate) return false;
