@@ -202,6 +202,24 @@ function checkDuplicate(eventId) {
   return { isDuplicate: false };
 }
 
+/**
+ * Extract client IP from x-forwarded-for (first hop only) for rate-limit key normalization.
+ * Vercel sets x-forwarded-for as: "client-ip, proxy1, proxy2, ..."
+ * We only want the actual client IP, not the proxy chain.
+ */
+function getClientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) {
+    // Handle both string and string[] (array from some proxies)
+    const xffString = Array.isArray(xff) ? xff[0] : xff;
+    if (typeof xffString === "string") {
+      const first = xffString.split(",")[0].trim();
+      if (first) return first;
+    }
+  }
+  return req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown";
+}
+
 module.exports = async function handler(req, res) {
   // Health check endpoint
   if (req.method === "GET") {
@@ -228,7 +246,8 @@ module.exports = async function handler(req, res) {
   }
 
   // Rate limiting - return 200 skipped instead of 429 (Linq retries 429/5xx)
-  const ip = req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "unknown";
+  // Extract client IP from x-forwarded-for (first hop only) for rate-limit key normalization
+  const ip = getClientIp(req);
   const rateLimit = checkRateLimit(ip);
   res.setHeader("X-RateLimit-Limit", "100");
   res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
@@ -256,13 +275,33 @@ module.exports = async function handler(req, res) {
     .filter(Boolean);
 
   // Read raw body as buffer (never re-serialize JSON for HMAC verification)
-  // bodyParser is disabled via export config above
+  // CRITICAL: Use req.on('data')/req.on('end') instead of for await - the latter hangs on Vercel
   const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
+  await new Promise((resolve, reject) => {
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", resolve);
+    req.on("error", reject);
+  });
   const rawBodyBuffer = Buffer.concat(chunks);
   const rawBodyString = rawBodyBuffer.toString("utf8");
+  
+  // Empty body check: if content-length > 0 but buffer is empty, fail closed
+  const contentLength = parseInt(req.headers["content-length"] || "0", 10);
+  if (contentLength > 0 && rawBodyBuffer.length === 0) {
+    if (linqSecret || requireSignature) {
+      // Signature expected - fail with 401
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "empty_body", message: "Content-Length > 0 but body is empty" }));
+      return;
+    } else {
+      // No signature expected - 200-skip to avoid false message.received
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ok: true, skipped: true, reason: "empty_body" }));
+      return;
+    }
+  }
   
   let body = {};
   try {
@@ -271,7 +310,10 @@ module.exports = async function handler(req, res) {
     body = {};
   }
 
-  // Signature verification (fail closed when secret is configured)
+  // Signature verification with production safety (fail-closed)
+  // In production, refuse unsigned POSTs unless ALLOW_UNSIGNED_WEBHOOKS=1 explicitly set
+  const isProduction = process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
+  
   if (linqSecret || requireSignature) {
     const verification = verifyWebhookSignature(req.headers, rawBodyBuffer, linqSecret);
     if (!verification.valid) {
@@ -288,8 +330,23 @@ module.exports = async function handler(req, res) {
         console.warn(`   Reason: ${verification.reason}`);
       }
     }
-  } else if (!allowUnsigned && process.env.NODE_ENV === "production") {
-    console.warn("⚠️  WARNING: No LINQ_WEBHOOK_SECRET configured in production! Webhooks are unsigned.");
+  } else {
+    // No secret configured - check production safety
+    if (isProduction && !allowUnsigned) {
+      // Fail-closed in production: no secret and no explicit allow → reject with 401 (not 503)
+      // 401 = no-retry class (same as invalid signature) - prevents Linq retry storm on misconfig
+      console.error("production_unsigned_webhook_blocked", { ip });
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        error: "webhook_signature_required",
+        message: "LINQ_WEBHOOK_SECRET is required in production. Set ALLOW_UNSIGNED_WEBHOOKS=1 to override (not recommended)."
+      }));
+      return;
+    } else if (allowUnsigned) {
+      // Warn when explicitly allowing unsigned (even in dev)
+      console.warn("⚠️  WARNING: Accepting unsigned webhooks (ALLOW_UNSIGNED_WEBHOOKS=1). Not recommended for production!");
+    }
   }
 
   // Event deduplication (using webhook-id or event_id)
@@ -369,7 +426,7 @@ module.exports = async function handler(req, res) {
   // V1 uses is_from_me flags
   // Use explicit check to avoid operator precedence issues with || and ??
   let fromMe = false;
-  if (data.direction === "outbound") {
+  if (String(data.direction || "").toLowerCase() === "outbound") {
     fromMe = true;
   } else {
     fromMe = Boolean(
@@ -395,14 +452,16 @@ module.exports = async function handler(req, res) {
 
   const allowed = matchesAllowlist(senderNorm);
 
-  // SECURITY: Fail closed when sender is missing on message.received
+  // 200-skip: missing_sender (consistent with live parity - Linq retries 429/5xx, not 4xx)
   // Do not forward if we cannot identify who sent the message
   if (isMessageReceived && !senderNorm) {
-    res.statusCode = 400;
+    res.statusCode = 200;
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ 
-      error: "missing_sender", 
-      message: "message.received events must include sender identification" 
+      ok: true,
+      skipped: true,
+      reason: "missing_sender",
+      eventType
     }));
     return;
   }
