@@ -27,7 +27,7 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 - Uses constant-time comparison to prevent timing attacks
 - Rejects webhooks older than 5 minutes (replay protection)
 - **Verifies against raw body bytes** (never re-serializes JSON)
-- **Fails closed**: When `LINQ_WEBHOOK_SECRET` is set, unsigned webhooks are rejected with 401. In production (`VERCEL_ENV=production` or `NODE_ENV=production`), unsigned webhooks are rejected with 503 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
+- **Fails closed**: When `LINQ_WEBHOOK_SECRET` is set, unsigned webhooks are rejected with 401. In production (`VERCEL_ENV=production` or `NODE_ENV=production`), unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
 
 ### 2. Sender Validation
 - Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** on `message.received` events with no identifiable sender (consistent with Linq retry semantics — it retries 429/5xx, not ordinary 4xx)
@@ -156,7 +156,7 @@ Client IP is extracted from `x-forwarded-for` (first hop only). Vercel's `x-forw
 
 ## Security Summary
 
-- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` in production. The forwarder fails closed when the secret is set. **Production safety**: In production environments, unsigned webhooks are rejected with 503 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
+- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` in production. The forwarder fails closed when the secret is set. **Production safety**: In production environments, unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
 - **Raw body verification**: Signature verification uses raw body bytes (never re-serializes JSON).
 - **Sender validation**: Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** for `message.received` events with no identifiable sender (consistent with Linq retry semantics).
 - **Event type validation**: Only known Linq event types are accepted.
