@@ -20,13 +20,6 @@
 const crypto = require("crypto");
 const { waitUntil } = require("@vercel/functions");
 
-// Disable Vercel's automatic body parsing to preserve raw bytes for HMAC verification
-export const config = {
-  api: {
-    bodyParser: false,
-  },
-};
-
 // In-memory stores for dedupe and rate limiting (consider Vercel KV for production)
 const processedEvents = new Map();
 const rateLimitStore = new Map();
@@ -463,4 +456,11 @@ module.exports = async function handler(req, res) {
       async: true,
     })
   );
+};
+
+// Disable Vercel's automatic body parsing to preserve raw bytes for HMAC verification
+module.exports.config = {
+  api: {
+    bodyParser: false,
+  },
 };
