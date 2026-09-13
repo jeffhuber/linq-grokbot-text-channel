@@ -228,12 +228,7 @@ module.exports = async function handler(req, res) {
     res.end(JSON.stringify({ 
       ok: true, 
       service: "linq-grokbot-text-channel", 
-      async: true,
-      security: {
-        signatureVerification: Boolean(process.env.LINQ_WEBHOOK_SECRET),
-        rateLimiting: true,
-        deduplication: true
-      }
+      async: true
     }));
     return;
   }
@@ -311,24 +306,22 @@ module.exports = async function handler(req, res) {
   }
 
   // Signature verification with production safety (fail-closed)
-  // In production, refuse unsigned POSTs unless ALLOW_UNSIGNED_WEBHOOKS=1 explicitly set
+  // When a secret is configured: invalid signatures always fail (bypass flag ignored)
+  // When no secret is configured: fail closed unless ALLOW_UNSIGNED_WEBHOOKS=1
   const isProduction = process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production";
   
   if (linqSecret || requireSignature) {
+    // Secret is configured - verify signature and always reject on failure
     const verification = verifyWebhookSignature(req.headers, rawBodyBuffer, linqSecret);
     if (!verification.valid) {
-      if (!allowUnsigned) {
-        res.statusCode = 401;
-        res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ 
-          error: "invalid_signature", 
-          reason: verification.reason 
-        }));
-        return;
-      } else {
-        console.warn("⚠️  WARNING: Accepting webhook with invalid signature (ALLOW_UNSIGNED_WEBHOOKS=1)");
-        console.warn(`   Reason: ${verification.reason}`);
-      }
+      // ALLOW_UNSIGNED_WEBHOOKS does not override a configured secret
+      res.statusCode = 401;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ 
+        error: "invalid_signature", 
+        reason: verification.reason 
+      }));
+      return;
     }
   } else {
     // No secret configured - fail closed unless explicitly allowing unsigned
