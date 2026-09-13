@@ -20,7 +20,7 @@ The forwarder **ACKs Linq immediately** (`async: true`) and forwards to Cursor v
 
 This forwarder implements defense-in-depth for public webhook endpoints:
 
-### 1. Webhook Signature Verification (Recommended)
+### 1. Webhook Signature Verification (Required unless bypassed)
 - Supports [Standard Webhooks](https://docs.linqapp.com/guides/webhooks/) format (`webhook-id`, `webhook-timestamp`, `webhook-signature`)
 - Accepts space-separated multiple `v1,{base64}` signatures (any match succeeds)
 - Falls back to legacy `X-Webhook-Signature` header if needed
@@ -70,7 +70,7 @@ Copy `forwarder/.env.example` → set in Vercel → Project → Settings → Env
 | `CURSOR_WEBHOOK_URL` | Cursor agent webhook URL |
 | `CURSOR_WEBHOOK_KEY` | Bearer token for that webhook |
 | `ALLOWLIST` | Comma-separated E.164 phones (e.g. `+15551234567`) |
-| `LINQ_WEBHOOK_SECRET` | **Recommended**: Linq webhook signing secret (format: `whsec_...`). If not set, webhooks are rejected unless `ALLOW_UNSIGNED_WEBHOOKS=1` |
+| `LINQ_WEBHOOK_SECRET` | **Required** unless `ALLOW_UNSIGNED_WEBHOOKS=1` is set: Linq webhook signing secret (format: `whsec_...`). When not set, webhooks are rejected (fail-closed) unless bypass is enabled |
 | `REQUIRE_LINQ_SIGNATURE` | Set to `1` to enforce signature verification (recommended when secret is set) |
 | `ALLOW_UNSIGNED_WEBHOOKS` | Set to `1` to allow unsigned webhooks (not recommended for production) |
 
