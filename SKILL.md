@@ -21,7 +21,7 @@ Read `README.md` and `docs/architecture.md` in that package before improvising.
    - `npm install` (needs `@vercel/functions` for `waitUntil`)
    - `npx vercel --prod` (add `--scope <team-slug>` if bare deploy returns Not authorized)
    - Set env from `forwarder/.env.example`: `CURSOR_WEBHOOK_URL`, `CURSOR_WEBHOOK_KEY`, `LINQ_WEBHOOK_SECRET` (from Linq webhook signing secret / whsec_...), `ALLOWLIST` (comma E.164)
-   - For local/dev testing only: optionally set `ALLOW_UNSIGNED_WEBHOOKS=1` to bypass signature verification (not recommended for production)
+   - For local/dev testing only: optionally set `ALLOW_UNSIGNED_WEBHOOKS=1` to bypass signature verification when no `LINQ_WEBHOOK_SECRET` is configured; when a secret is set, invalid signatures always result in 401 regardless of this flag (not recommended for production)
    - Confirm GET health returns `{ ok: true, async: true }`
 
 2. **Create Linq webhook** (production):
