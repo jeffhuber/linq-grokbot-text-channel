@@ -68,7 +68,7 @@ The forwarder:
 
 - Accepts `GET` (health) and `POST` (events).
 - Skips non-`message.received`, `from_me`, and senders present but not on `ALLOWLIST`.
-- If sender is **missing** on `message.received`, still forwards (desk/persona should apply its own filters).
+- Skips `message.received` events with **missing sender** (cannot identify who sent the message).
 
 ## What not to put in this repo
 

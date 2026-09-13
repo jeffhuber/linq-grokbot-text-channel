@@ -13,9 +13,9 @@
  *   CURSOR_WEBHOOK_URL       – Cursor agent webhook URL
  *   CURSOR_WEBHOOK_KEY       – Bearer token for that webhook
  *   ALLOWLIST                – comma-separated E.164 phones (optional filter)
- *   LINQ_WEBHOOK_SECRET      – Linq webhook signing secret (required in prod)
+ *   LINQ_WEBHOOK_SECRET      – Linq webhook signing secret (recommended; if not set, webhooks rejected unless ALLOW_UNSIGNED_WEBHOOKS=1)
  *   REQUIRE_LINQ_SIGNATURE   – set to "1" to enforce signature verification
- *   ALLOW_UNSIGNED_WEBHOOKS  – set to "1" to allow unsigned in dev (not recommended)
+ *   ALLOW_UNSIGNED_WEBHOOKS  – set to "1" to allow unsigned webhooks (not recommended for production)
  */
 const crypto = require("crypto");
 const { waitUntil } = require("@vercel/functions");
@@ -326,24 +326,24 @@ module.exports = async function handler(req, res) {
         }));
         return;
       } else {
-        console.warn("⚠️  WARNING: Accepting unsigned webhook in dev mode. Set LINQ_WEBHOOK_SECRET for production!");
+        console.warn("⚠️  WARNING: Accepting webhook with invalid signature (ALLOW_UNSIGNED_WEBHOOKS=1)");
         console.warn(`   Reason: ${verification.reason}`);
       }
     }
   } else {
-    // No secret configured - check production safety
-    if (isProduction && !allowUnsigned) {
-      // Fail-closed in production: no secret and no explicit allow → reject with 401 (not 503)
+    // No secret configured - fail closed unless explicitly allowing unsigned
+    if (!allowUnsigned) {
+      // Fail-closed: no secret and no explicit allow → reject with 401 (not 503)
       // 401 = no-retry class (same as invalid signature) - prevents Linq retry storm on misconfig
-      console.error("production_unsigned_webhook_blocked", { ip });
+      console.error("unsigned_webhook_blocked", { ip, isProduction });
       res.statusCode = 401;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({
         error: "webhook_signature_required",
-        message: "LINQ_WEBHOOK_SECRET is required in production. Set ALLOW_UNSIGNED_WEBHOOKS=1 to override (not recommended)."
+        message: "LINQ_WEBHOOK_SECRET is required. Set ALLOW_UNSIGNED_WEBHOOKS=1 to override (not recommended)."
       }));
       return;
-    } else if (allowUnsigned) {
+    } else {
       // Warn when explicitly allowing unsigned (even in dev)
       console.warn("⚠️  WARNING: Accepting unsigned webhooks (ALLOW_UNSIGNED_WEBHOOKS=1). Not recommended for production!");
     }

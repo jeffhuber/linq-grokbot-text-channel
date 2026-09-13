@@ -20,14 +20,14 @@ The forwarder **ACKs Linq immediately** (`async: true`) and forwards to Cursor v
 
 This forwarder implements defense-in-depth for public webhook endpoints:
 
-### 1. Webhook Signature Verification (Required for Production)
+### 1. Webhook Signature Verification (Recommended)
 - Supports [Standard Webhooks](https://docs.linqapp.com/guides/webhooks/) format (`webhook-id`, `webhook-timestamp`, `webhook-signature`)
 - Accepts space-separated multiple `v1,{base64}` signatures (any match succeeds)
 - Falls back to legacy `X-Webhook-Signature` header if needed
 - Uses constant-time comparison to prevent timing attacks
 - Rejects webhooks older than 5 minutes (replay protection)
 - **Verifies against raw body bytes** (never re-serializes JSON)
-- **Fails closed**: When `LINQ_WEBHOOK_SECRET` is set, unsigned webhooks are rejected with 401. In production (`VERCEL_ENV=production` or `NODE_ENV=production`), unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
+- **Fails closed**: When `LINQ_WEBHOOK_SECRET` is not set, unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended for production).
 
 ### 2. Sender Validation
 - Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** on `message.received` events with no identifiable sender (consistent with Linq retry semantics — it retries 429/5xx, not ordinary 4xx)
@@ -70,9 +70,9 @@ Copy `forwarder/.env.example` → set in Vercel → Project → Settings → Env
 | `CURSOR_WEBHOOK_URL` | Cursor agent webhook URL |
 | `CURSOR_WEBHOOK_KEY` | Bearer token for that webhook |
 | `ALLOWLIST` | Comma-separated E.164 phones (e.g. `+15551234567`) |
-| `LINQ_WEBHOOK_SECRET` | **Required for production**: Linq webhook signing secret (format: `whsec_...`) |
-| `REQUIRE_LINQ_SIGNATURE` | Set to `1` to enforce signature verification (recommended) |
-| `ALLOW_UNSIGNED_WEBHOOKS` | Set to `1` to allow unsigned webhooks in dev only (NOT for production) |
+| `LINQ_WEBHOOK_SECRET` | **Recommended**: Linq webhook signing secret (format: `whsec_...`). If not set, webhooks are rejected unless `ALLOW_UNSIGNED_WEBHOOKS=1` |
+| `REQUIRE_LINQ_SIGNATURE` | Set to `1` to enforce signature verification (recommended when secret is set) |
+| `ALLOW_UNSIGNED_WEBHOOKS` | Set to `1` to allow unsigned webhooks (not recommended for production) |
 
 Redeploy after setting env. Health check: `GET https://YOUR_DEPLOYMENT/` → `{ "ok": true, ... }`.
 
@@ -120,7 +120,7 @@ The parser resolves sender and from-me status across both versions automatically
 
 ## Security Configuration
 
-### Required for Production
+### Recommended for Production
 
 1. **Set `LINQ_WEBHOOK_SECRET`**: Get your signing secret from Linq when creating the webhook (step 2 above). The secret will be in the format `whsec_...` (Standard Webhooks) or a raw secret string (legacy).
 
@@ -133,8 +133,9 @@ The parser resolves sender and from-me status across both versions automatically
 ### Development Mode
 
 For local testing without a signing secret:
-- Set `ALLOW_UNSIGNED_WEBHOOKS=1` (development only, NOT for production)
+- Set `ALLOW_UNSIGNED_WEBHOOKS=1` to bypass signature verification
 - The forwarder will log clear warnings when accepting unsigned webhooks
+- Not recommended for production deployments
 
 ### Multi-Instance Deployments
 
@@ -156,7 +157,7 @@ Client IP is extracted from `x-forwarded-for` (first hop only). Vercel's `x-forw
 
 ## Security Summary
 
-- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` in production. The forwarder fails closed when the secret is set. **Production safety**: In production environments, unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended).
+- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` for production. The forwarder fails closed: unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended for production).
 - **Raw body verification**: Signature verification uses raw body bytes (never re-serializes JSON).
 - **Sender validation**: Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** for `message.received` events with no identifiable sender (consistent with Linq retry semantics).
 - **Event type validation**: Only known Linq event types are accepted.
