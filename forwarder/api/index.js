@@ -331,19 +331,19 @@ module.exports = async function handler(req, res) {
       }
     }
   } else {
-    // No secret configured - check production safety
-    if (isProduction && !allowUnsigned) {
-      // Fail-closed in production: no secret and no explicit allow → reject with 401 (not 503)
+    // No secret configured - fail closed unless explicitly allowing unsigned
+    if (!allowUnsigned) {
+      // Fail-closed: no secret and no explicit allow → reject with 401 (not 503)
       // 401 = no-retry class (same as invalid signature) - prevents Linq retry storm on misconfig
-      console.error("production_unsigned_webhook_blocked", { ip });
+      console.error("unsigned_webhook_blocked", { ip, isProduction });
       res.statusCode = 401;
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify({
         error: "webhook_signature_required",
-        message: "LINQ_WEBHOOK_SECRET is required in production. Set ALLOW_UNSIGNED_WEBHOOKS=1 to override (not recommended)."
+        message: "LINQ_WEBHOOK_SECRET is required. Set ALLOW_UNSIGNED_WEBHOOKS=1 to override (not recommended)."
       }));
       return;
-    } else if (allowUnsigned) {
+    } else {
       // Warn when explicitly allowing unsigned (even in dev)
       console.warn("⚠️  WARNING: Accepting unsigned webhooks (ALLOW_UNSIGNED_WEBHOOKS=1). Not recommended for production!");
     }
