@@ -14,7 +14,7 @@ Linq (message.received)
 
 A **5-minute poll backup** (agent routine) covers missed webhooks. **Never advance `last-seen` until after a successful outbound send.**
 
-The forwarder **ACKs Linq immediately** (`async: true`) and forwards to Cursor via Vercel `waitUntil`. If it awaited Cursor before responding, Linq would redeliver the same `event_id` during long agent wakes and the desk would answer repeatedly.
+The forwarder **ACKs Linq immediately** with `{ ok: true, accepted: true, queued: true }` and forwards to Cursor via Vercel `waitUntil`. The response indicates the request has been **accepted/queued**, not that it has been successfully forwarded (async pattern). If it awaited Cursor before responding, Linq would redeliver the same `event_id` during long agent wakes and the desk would answer repeatedly.
 
 ## Security Features
 
@@ -38,20 +38,27 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 - Only accepts known Linq event types (`message.received`, `message.sent`, etc.)
 - Rejects unknown event shapes with 400 error
 
-### 4. Event Deduplication
+### 4. Request Body Size Limits
+- Maximum body size: 256KB (configurable via `MAX_BODY_SIZE`)
+- Early `Content-Length` validation before reading body
+- Stream termination if size exceeded during reading
+- Returns **413 Payload Too Large** for oversized requests
+- Prevents memory exhaustion from unbounded request bodies
+
+### 5. Event Deduplication
 - Uses `webhook-id` (Standard Webhooks) or `event_id` as idempotency key
 - Returns **200 with `{ ok: true, skipped: true, reason: "duplicate" }`** for duplicates
 - In-memory dedupe store (10-minute retention)
-- **Note**: For multi-instance deployments, consider Vercel KV or Upstash Redis for shared state
+- **Note**: In-memory stores are **per-isolate** (each serverless instance has its own copy). For multi-instance deployments, consider Vercel KV or Upstash Redis for shared state
 
-### 5. Rate Limiting
+### 6. Rate Limiting
 - 100 requests per 5 minutes per IP address (extracted from `x-forwarded-for` first hop only for accurate client identification)
 - Returns **200 with `{ ok: true, skipped: true, reason: "rate_limited" }`** (not 429)
 - Linq retries 429/5xx, so rate-limited requests return success to prevent retries
 - `X-RateLimit-Limit` and `X-RateLimit-Remaining` headers on all responses
-- In-memory store (consider shared store for production scale)
+- In-memory store (per-isolate; consider shared store for production scale)
 
-### 6. Security Headers
+### 7. Security Headers
 - `X-RateLimit-Limit` and `X-RateLimit-Remaining` on all responses
 
 ## Quickstart
@@ -100,7 +107,7 @@ linq webhooks create \
 
 Text the Linq number from an allowlisted phone. Confirm:
 
-1. Forwarder returns fast `200` with `forwarded: true` and `async: true` (check Vercel logs for the upstream hop).
+1. Forwarder returns fast `200` with `{ ok: true, accepted: true, queued: true }` (check Vercel logs for the upstream hop).
 2. Cursor agent wakes and replies via Linq.
 3. Poll path still works if you temporarily disable the Linq webhook.
 

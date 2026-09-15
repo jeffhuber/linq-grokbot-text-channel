@@ -264,6 +264,71 @@ async function testNoSecretLeakage() {
   }
 }
 
+async function testOversizedBodyContentLength() {
+  // Request with Content-Length exceeding MAX_BODY_SIZE (256KB) → 413
+  const req = createMockRequest('POST', {
+    'content-type': 'application/json',
+    'content-length': String(300 * 1024) // 300KB
+  });
+  const res = createMockResponse();
+  
+  req._triggerEnd();
+  
+  await handler(req, res);
+  
+  if (res.statusCode !== 413) {
+    throw new Error(`Expected 413 for oversized Content-Length, got ${res.statusCode}`);
+  }
+  
+  const body = JSON.parse(res.getBody());
+  if (body.error !== 'payload_too_large') {
+    throw new Error(`Expected payload_too_large error, got ${JSON.stringify(body)}`);
+  }
+  
+  console.log('✓ Oversized body (Content-Length) test passed');
+}
+
+async function testOversizedBodyStreaming() {
+  // Request that exceeds MAX_BODY_SIZE during streaming → 413
+  const originalBypass = process.env.ALLOW_UNSIGNED_WEBHOOKS;
+  process.env.ALLOW_UNSIGNED_WEBHOOKS = '1'; // Allow unsigned for this test
+  
+  try {
+    // Create a large payload (300KB)
+    const largeChunk = Buffer.alloc(300 * 1024, 'x');
+    const req = createMockRequest('POST', {
+      'content-type': 'application/json',
+      'content-length': String(largeChunk.length)
+    }, [largeChunk]);
+    const res = createMockResponse();
+    
+    // Start handler, then trigger body events
+    const p = handler(req, res);
+    req._triggerData();
+    req._triggerEnd();
+    
+    try {
+      await p;
+    } catch (err) {
+      // Expected to throw
+    }
+    
+    if (res.statusCode !== 413) {
+      throw new Error(`Expected 413 for oversized streaming body, got ${res.statusCode}`);
+    }
+    
+    const body = JSON.parse(res.getBody());
+    if (body.error !== 'payload_too_large') {
+      throw new Error(`Expected payload_too_large error, got ${JSON.stringify(body)}`);
+    }
+    
+    console.log('✓ Oversized body (streaming) test passed');
+  } finally {
+    if (originalBypass !== undefined) process.env.ALLOW_UNSIGNED_WEBHOOKS = originalBypass;
+    else delete process.env.ALLOW_UNSIGNED_WEBHOOKS;
+  }
+}
+
 // Run all tests
 async function runTests() {
   try {
@@ -273,6 +338,8 @@ async function runTests() {
     await testInvalidSignature();
     await testBypassIgnoredWhenSecretSet();
     await testNoSecretLeakage();
+    await testOversizedBodyContentLength();
+    await testOversizedBodyStreaming();
     
     console.log('\nAll tests passed! ✓');
     // Force exit to avoid hanging on setInterval in handler
