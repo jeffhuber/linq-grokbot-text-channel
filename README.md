@@ -39,7 +39,7 @@ This forwarder implements defense-in-depth for public webhook endpoints:
 - Rejects unknown event shapes with 400 error
 
 ### 4. Request Body Size Limits
-- Maximum body size: 256KB (configurable via `MAX_BODY_SIZE`)
+- Maximum body size: 256KB (hardcoded constant)
 - Early `Content-Length` validation before reading body
 - Stream termination if size exceeded during reading
 - Returns **413 Payload Too Large** for oversized requests

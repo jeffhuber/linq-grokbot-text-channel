@@ -294,22 +294,29 @@ module.exports = async function handler(req, res) {
   let totalBytes = 0;
   let streamDestroyed = false;
 
-  await new Promise((resolve, reject) => {
-    req.on("data", (chunk) => {
-      if (streamDestroyed) return;
-      
-      totalBytes += chunk.length;
-      if (totalBytes > MAX_BODY_SIZE) {
-        streamDestroyed = true;
-        req.destroy();
-        reject(new Error("payload_too_large"));
-        return;
-      }
-      chunks.push(chunk);
+  try {
+    await new Promise((resolve, reject) => {
+      req.on("data", (chunk) => {
+        if (streamDestroyed) return;
+        
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BODY_SIZE) {
+          streamDestroyed = true;
+          req.destroy();
+          reject(new Error("payload_too_large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", resolve);
+      req.on("error", (err) => {
+        // Guard against double-reject after destroy
+        if (!streamDestroyed) {
+          reject(err);
+        }
+      });
     });
-    req.on("end", resolve);
-    req.on("error", reject);
-  }).catch(err => {
+  } catch (err) {
     if (err.message === "payload_too_large" || streamDestroyed) {
       res.statusCode = 413;
       res.setHeader("Content-Type", "application/json");
@@ -318,10 +325,10 @@ module.exports = async function handler(req, res) {
         message: `Request body exceeds ${MAX_BODY_SIZE} bytes`,
         maxSize: MAX_BODY_SIZE
       }));
-      throw err;
+      return; // Exit handler after sending 413
     }
     throw err;
-  });
+  }
 
   const rawBodyBuffer = Buffer.concat(chunks);
   const rawBodyString = rawBodyBuffer.toString("utf8");
