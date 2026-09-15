@@ -20,7 +20,11 @@
 const crypto = require("crypto");
 const { waitUntil } = require("@vercel/functions");
 
+// Request body size limit (256KB for Linq webhooks)
+const MAX_BODY_SIZE = 256 * 1024;
+
 // In-memory stores for dedupe and rate limiting (consider Vercel KV for production)
+// NOTE: These are per-isolate. Multi-instance deployments should use shared storage (Vercel KV, Upstash Redis).
 const processedEvents = new Map();
 const rateLimitStore = new Map();
 
@@ -269,19 +273,67 @@ module.exports = async function handler(req, res) {
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // Early Content-Length check (reject oversized requests before reading body)
+  const contentLength = parseInt(req.headers["content-length"] || "0", 10);
+  if (contentLength > MAX_BODY_SIZE) {
+    res.statusCode = 413;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ 
+      error: "payload_too_large", 
+      message: `Request body exceeds ${MAX_BODY_SIZE} bytes`,
+      maxSize: MAX_BODY_SIZE,
+      receivedSize: contentLength
+    }));
+    return;
+  }
+
   // Read raw body as buffer (never re-serialize JSON for HMAC verification)
   // CRITICAL: Use req.on('data')/req.on('end') instead of for await - the latter hangs on Vercel
+  // Cap accumulation at MAX_BODY_SIZE and destroy stream if exceeded
   const chunks = [];
-  await new Promise((resolve, reject) => {
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", resolve);
-    req.on("error", reject);
-  });
+  let totalBytes = 0;
+  let streamDestroyed = false;
+
+  try {
+    await new Promise((resolve, reject) => {
+      req.on("data", (chunk) => {
+        if (streamDestroyed) return;
+        
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BODY_SIZE) {
+          streamDestroyed = true;
+          req.destroy();
+          reject(new Error("payload_too_large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      req.on("end", resolve);
+      req.on("error", (err) => {
+        // Guard against double-reject after destroy
+        if (!streamDestroyed) {
+          reject(err);
+        }
+      });
+    });
+  } catch (err) {
+    if (err.message === "payload_too_large" || streamDestroyed) {
+      res.statusCode = 413;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ 
+        error: "payload_too_large", 
+        message: `Request body exceeds ${MAX_BODY_SIZE} bytes`,
+        maxSize: MAX_BODY_SIZE
+      }));
+      return; // Exit handler after sending 413
+    }
+    throw err;
+  }
+
   const rawBodyBuffer = Buffer.concat(chunks);
   const rawBodyString = rawBodyBuffer.toString("utf8");
   
   // Empty body check: if content-length > 0 but buffer is empty, fail closed
-  const contentLength = parseInt(req.headers["content-length"] || "0", 10);
   if (contentLength > 0 && rawBodyBuffer.length === 0) {
     if (linqSecret || requireSignature) {
       // Signature expected - fail with 401
@@ -340,6 +392,14 @@ module.exports = async function handler(req, res) {
       // Warn when explicitly allowing unsigned (even in dev)
       console.warn("⚠️  WARNING: Accepting unsigned webhooks (ALLOW_UNSIGNED_WEBHOOKS=1). Not recommended for production!");
     }
+  }
+
+  // Cursor env validation (must happen BEFORE deduplication to avoid marking events as seen when misconfigured)
+  if (!cursorUrl || !cursorKey) {
+    res.statusCode = 500;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ error: "missing_cursor_env" }));
+    return;
   }
 
   // Event deduplication (using webhook-id or event_id)
@@ -485,13 +545,6 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  if (!cursorUrl || !cursorKey) {
-    res.statusCode = 500;
-    res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ error: "missing_cursor_env" }));
-    return;
-  }
-
   // ACK Linq immediately so it does not redeliver the same event_id while
   // Cursor agent wakes (often 30–100s). Forward runs after the response via waitUntil.
   const forwardPromise = (async () => {
@@ -517,8 +570,8 @@ module.exports = async function handler(req, res) {
   res.end(
     JSON.stringify({
       ok: true,
-      forwarded: true,
-      async: true,
+      accepted: true,
+      queued: true,
     })
   );
 };
