@@ -290,26 +290,73 @@ module.exports = async function handler(req, res) {
   // Read raw body as buffer (never re-serialize JSON for HMAC verification)
   // CRITICAL: Use req.on('data')/req.on('end') instead of for await - the latter hangs on Vercel
   // Cap accumulation at MAX_BODY_SIZE and destroy stream if exceeded
+  // Handle premature close/abort and timeout when Content-Length not satisfied
   const chunks = [];
   let totalBytes = 0;
   let streamDestroyed = false;
+  let readTimeout = null;
 
   try {
     await new Promise((resolve, reject) => {
+      // Set a timeout when Content-Length is declared but body doesn't arrive
+      // 10s is generous for webhook payloads (Vercel has 10s default for hobby/pro)
+      if (contentLength > 0) {
+        readTimeout = setTimeout(() => {
+          if (!streamDestroyed && totalBytes < contentLength) {
+            streamDestroyed = true;
+            req.destroy();
+            reject(new Error("body_incomplete_timeout"));
+          }
+        }, 10000);
+      }
+
       req.on("data", (chunk) => {
         if (streamDestroyed) return;
         
         totalBytes += chunk.length;
         if (totalBytes > MAX_BODY_SIZE) {
           streamDestroyed = true;
+          if (readTimeout) clearTimeout(readTimeout);
           req.destroy();
           reject(new Error("payload_too_large"));
           return;
         }
         chunks.push(chunk);
       });
-      req.on("end", resolve);
+
+      req.on("end", () => {
+        if (readTimeout) clearTimeout(readTimeout);
+        // Check if Content-Length was declared but bytes don't match
+        if (contentLength > 0 && totalBytes !== contentLength) {
+          if (totalBytes < contentLength) {
+            reject(new Error("body_incomplete"));
+          } else {
+            reject(new Error("body_exceeds_content_length"));
+          }
+          return;
+        }
+        resolve();
+      });
+
+      req.on("close", () => {
+        if (readTimeout) clearTimeout(readTimeout);
+        // Connection closed before receiving all declared bytes
+        if (contentLength > 0 && totalBytes < contentLength && !streamDestroyed) {
+          streamDestroyed = true;
+          reject(new Error("body_incomplete_close"));
+        }
+      });
+
+      req.on("aborted", () => {
+        if (readTimeout) clearTimeout(readTimeout);
+        if (!streamDestroyed) {
+          streamDestroyed = true;
+          reject(new Error("body_incomplete_aborted"));
+        }
+      });
+
       req.on("error", (err) => {
+        if (readTimeout) clearTimeout(readTimeout);
         // Guard against double-reject after destroy
         if (!streamDestroyed) {
           reject(err);
@@ -325,8 +372,37 @@ module.exports = async function handler(req, res) {
         message: `Request body exceeds ${MAX_BODY_SIZE} bytes`,
         maxSize: MAX_BODY_SIZE
       }));
-      return; // Exit handler after sending 413
+      return;
     }
+    
+    // Body incomplete or mismatch: Content-Length doesn't match received bytes
+    if (err.message === "body_incomplete" || 
+        err.message === "body_incomplete_timeout" ||
+        err.message === "body_incomplete_close" ||
+        err.message === "body_incomplete_aborted") {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ 
+        error: "body_incomplete",
+        message: `Content-Length declared ${contentLength} bytes but only ${totalBytes} bytes received`,
+        expectedBytes: contentLength,
+        receivedBytes: totalBytes
+      }));
+      return;
+    }
+    
+    if (err.message === "body_exceeds_content_length") {
+      res.statusCode = 400;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ 
+        error: "content_length_mismatch",
+        message: `Content-Length declared ${contentLength} bytes but ${totalBytes} bytes received`,
+        expectedBytes: contentLength,
+        receivedBytes: totalBytes
+      }));
+      return;
+    }
+    
     throw err;
   }
 
@@ -334,6 +410,7 @@ module.exports = async function handler(req, res) {
   const rawBodyString = rawBodyBuffer.toString("utf8");
   
   // Empty body check: if content-length > 0 but buffer is empty, fail closed
+  // (Note: Content-Length mismatch is now caught in stream reader above)
   if (contentLength > 0 && rawBodyBuffer.length === 0) {
     if (linqSecret || requireSignature) {
       // Signature expected - fail with 401

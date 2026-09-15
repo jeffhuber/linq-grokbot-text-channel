@@ -126,10 +126,11 @@ async function testFailClosedNoSecretNoBypass() {
   delete process.env.ALLOW_UNSIGNED_WEBHOOKS;
   
   try {
+    const bodyStr = '{"event_type":"message.received","data":{}}';
     const req = createMockRequest('POST', {
       'content-type': 'application/json',
-      'content-length': '50'
-    }, ['{"event_type":"message.received","data":{}}']);
+      'content-length': String(Buffer.byteLength(bodyStr))
+    }, [bodyStr]);
     const res = createMockResponse();
     
     // Start handler first (attach listeners), then trigger body events synchronously
@@ -160,10 +161,11 @@ async function testInvalidSignature() {
   process.env.LINQ_WEBHOOK_SECRET = 'whsec_dGVzdHNlY3JldDEyMzQ1'; // base64("testsecret12345")
   
   try {
+    const bodyStr = '{"event_type":"message.received","data":{}}';
     const req = createMockRequest('POST', {
       'content-type': 'application/json',
-      'content-length': '50'
-    }, ['{"event_type":"message.received","data":{}}']);
+      'content-length': String(Buffer.byteLength(bodyStr))
+    }, [bodyStr]);
     const res = createMockResponse();
     
     // Start handler, then trigger body events
@@ -198,10 +200,11 @@ async function testBypassIgnoredWhenSecretSet() {
   process.env.ALLOW_UNSIGNED_WEBHOOKS = '1';
   
   try {
+    const bodyStr = '{"event_type":"message.received","data":{}}';
     const req = createMockRequest('POST', {
       'content-type': 'application/json',
-      'content-length': '50'
-    }, ['{"event_type":"message.received","data":{}}']);
+      'content-length': String(Buffer.byteLength(bodyStr))
+    }, [bodyStr]);
     const res = createMockResponse();
     
     // Start handler, then trigger body events
@@ -239,10 +242,11 @@ async function testNoSecretLeakage() {
   process.env.LINQ_WEBHOOK_SECRET = 'whsec_VGVzdFNlY3JldDEyMzQ1Njc4OTA='; // base64
   
   try {
+    const bodyStr = '{"event_type":"message.received","data":{}}';
     const req = createMockRequest('POST', {
       'content-type': 'application/json',
-      'content-length': '50'
-    }, ['{"event_type":"message.received","data":{}}']);
+      'content-length': String(Buffer.byteLength(bodyStr))
+    }, [bodyStr]);
     const res = createMockResponse();
     
     // Start handler, then trigger body events synchronously
@@ -339,6 +343,38 @@ async function testOversizedBodyStreaming() {
   }
 }
 
+async function testContentLengthMismatch() {
+  // Request with Content-Length: 100 but actual body only 7 bytes → 400
+  // This reproduces the live issue: curl with -H 'Content-Length: 100' --data-binary '{"a":1}'
+  const req = createMockRequest('POST', {
+    'content-type': 'application/json',
+    'content-length': '100'
+  }, ['{"a":1}']);
+  const res = createMockResponse();
+  
+  // Start handler, then trigger body events
+  const p = handler(req, res);
+  req._triggerData();
+  req._triggerEnd();
+  
+  await p;
+  
+  if (res.statusCode !== 400) {
+    throw new Error(`Expected 400 for Content-Length mismatch, got ${res.statusCode}`);
+  }
+  
+  const body = JSON.parse(res.getBody());
+  if (body.error !== 'body_incomplete') {
+    throw new Error(`Expected body_incomplete error, got ${JSON.stringify(body)}`);
+  }
+  
+  if (body.expectedBytes !== 100 || body.receivedBytes !== 7) {
+    throw new Error(`Expected expectedBytes=100 and receivedBytes=7, got ${JSON.stringify(body)}`);
+  }
+  
+  console.log('✓ Content-Length mismatch (body incomplete) test passed');
+}
+
 // Run all tests
 async function runTests() {
   try {
@@ -350,6 +386,7 @@ async function runTests() {
     await testNoSecretLeakage();
     await testOversizedBodyContentLength();
     await testOversizedBodyStreaming();
+    await testContentLengthMismatch();
     
     console.log('\nAll tests passed! ✓');
     // Force exit to avoid hanging on setInterval in handler
