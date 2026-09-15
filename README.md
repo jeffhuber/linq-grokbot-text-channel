@@ -1,6 +1,6 @@
 # linq-grokbot-text-channel
 
-**⚠️ Experimental**: Security-hardened Linq → Cursor Grok Bot webhook forwarder (not a production SMS gateway product).
+**⚠️ Experimental**: Linq → Cursor Grok Bot webhook forwarder with signature verification and rate limiting (not a production SMS gateway product).
 
 Wire a **Linq Shared / Free** number to a **Grok Bot** (Cursor agent) over a durable webhook path with cryptographic signature verification and rate limiting.
 
@@ -18,7 +18,7 @@ The forwarder **ACKs Linq immediately** with `{ ok: true, accepted: true, queued
 
 ## Security Features
 
-This forwarder implements defense-in-depth for public webhook endpoints:
+This forwarder implements common protections for public webhook endpoints:
 
 ### 1. Webhook Signature Verification (Required unless bypassed)
 - Supports [Standard Webhooks](https://docs.linqapp.com/guides/webhooks/) format (`webhook-id`, `webhook-timestamp`, `webhook-signature`)
@@ -166,7 +166,7 @@ Client IP is extracted from `x-forwarded-for` (first hop only). Vercel's `x-forw
 
 ## Security Summary
 
-- **Webhook signatures**: Always configure `LINQ_WEBHOOK_SECRET` for production. The forwarder fails closed: unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended for production). When a secret IS configured, invalid signatures always fail regardless of bypass flag.
+- **Webhook signatures**: Configure `LINQ_WEBHOOK_SECRET` for production. The forwarder fails closed: unsigned webhooks are rejected with 401 unless `ALLOW_UNSIGNED_WEBHOOKS=1` is explicitly set (not recommended for production). When a secret IS configured, invalid signatures always fail regardless of bypass flag.
 - **Raw body verification**: Signature verification uses raw body bytes (never re-serializes JSON).
 - **Sender validation**: Returns **200 with `{ ok: true, skipped: true, reason: "missing_sender" }`** for `message.received` events with no identifiable sender (consistent with Linq retry semantics).
 - **Event type validation**: Only known Linq event types are accepted.
