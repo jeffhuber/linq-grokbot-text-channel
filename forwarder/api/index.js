@@ -333,6 +333,20 @@ module.exports = async function handler(req, res) {
   const rawBodyBuffer = Buffer.concat(chunks);
   const rawBodyString = rawBodyBuffer.toString("utf8");
   
+  // Content-Length mismatch check: declared size must match actual received bytes
+  // Fail with 400 before signature verification to avoid platform 500
+  if (contentLength > 0 && rawBodyBuffer.length !== contentLength) {
+    res.statusCode = 400;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ 
+      error: "content_length_mismatch",
+      message: `Content-Length header (${contentLength} bytes) does not match actual body size (${rawBodyBuffer.length} bytes)`,
+      expectedBytes: contentLength,
+      receivedBytes: rawBodyBuffer.length
+    }));
+    return;
+  }
+  
   // Empty body check: if content-length > 0 but buffer is empty, fail closed
   if (contentLength > 0 && rawBodyBuffer.length === 0) {
     if (linqSecret || requireSignature) {
