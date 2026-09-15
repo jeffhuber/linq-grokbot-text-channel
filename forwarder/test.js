@@ -364,15 +364,15 @@ async function testContentLengthMismatch() {
   }
   
   const body = JSON.parse(res.getBody());
-  if (body.error !== 'content_length_mismatch') {
-    throw new Error(`Expected content_length_mismatch error, got ${JSON.stringify(body)}`);
+  if (body.error !== 'body_incomplete') {
+    throw new Error(`Expected body_incomplete error, got ${JSON.stringify(body)}`);
   }
   
   if (body.expectedBytes !== 100 || body.receivedBytes !== 7) {
     throw new Error(`Expected expectedBytes=100 and receivedBytes=7, got ${JSON.stringify(body)}`);
   }
   
-  console.log('✓ Content-Length mismatch test passed');
+  console.log('✓ Content-Length mismatch (body incomplete) test passed');
 }
 
 // Run all tests
